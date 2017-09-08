@@ -9,15 +9,22 @@ int main(int argc, char *argv[])
 	GError *err;
 	gchar *debug_info;
 
+	/* Initialize GStreamer */
 	gst_init(&argc, &argv);
+
+	/* Create elements */
 	source = gst_element_factory_make("videotestsrc", "source");
 	sink = gst_element_factory_make("autovideosink", "sink");
+
+	/* Create an empty pipeline */
 	pipeline = gst_pipeline_new("test-pipeline"); 
+
 	if ((!source) || (!sink) || (!pipeline)) {
 		g_printerr("fail to create elements\n");
 		return -1;
 	}
 
+	/* Build the pipeline */
 	gst_bin_add_many(GST_BIN(pipeline), source, sink, NULL);
 	if (gst_element_link(source, sink) != TRUE) {
 		g_printerr("Fail to link\n");
@@ -25,8 +32,10 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	/* Set source property */
 	g_object_set(source, "pattern", 0, NULL);
 
+	/* Start playing */
 	retval = gst_element_set_state(pipeline, GST_STATE_PLAYING);
 	if (retval == GST_STATE_CHANGE_FAILURE) {
 		g_printerr("Fail to change state\n");
@@ -37,6 +46,7 @@ int main(int argc, char *argv[])
 	bus = gst_element_get_bus(pipeline);
 	msg = gst_bus_timed_pop_filtered(bus, GST_CLOCK_TIME_NONE, GST_MESSAGE_ERROR | GST_MESSAGE_EOS);
 
+	/* parse message */
 	if (NULL != msg) {
 		switch (GST_MESSAGE_TYPE(msg)) {
 			case GST_MESSAGE_ERROR:
@@ -45,6 +55,9 @@ int main(int argc, char *argv[])
 				g_printerr("Debug info: %s\n", debug_info ? debug_info : "none");
 				g_clear_error(&err);
 				g_free(debug_info);
+				break;
+			case GST_MESSAGE_EOS:
+				g_print("Reached end of stream\n");
 				break;
 			default:
 				g_printerr("Received unexpected message\n");

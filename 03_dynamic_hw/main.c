@@ -56,7 +56,10 @@ int main(int argc, char *argv[])
 	gchar *debug_info;
 	gboolean terminate = FALSE;
 
+	/* Initialize GStreamer */
 	gst_init(&argc, &argv);
+
+	/* Create elements */
 	graph.source = gst_element_factory_make("uridecodebin", "source");
 	graph.convert = gst_element_factory_make("audioconvert", "convert");
 	graph.sink = gst_element_factory_make("autoaudiosink", "sink");
@@ -66,6 +69,7 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	/* Create an empty pipeline */
 	gst_bin_add_many(GST_BIN(graph.pipeline), graph.source, graph.convert, graph.sink, NULL);
 	if (gst_element_link(graph.convert, graph.sink) != TRUE) {
 		g_printerr("Fail to link\n");
@@ -73,10 +77,13 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	/* Set source's properties */
 	g_object_set(graph.source, "uri", "https://www.freedesktop.org/software/gstreamer-sdk/data/media/sintel_trailer-480p.webm", NULL);
 
+	/* Connect pad-added signal */
 	g_signal_connect(graph.source, "pad-added", G_CALLBACK(pad_added_handler), &graph);
 
+	/* Start playing */
 	retval = gst_element_set_state(graph.pipeline, GST_STATE_PLAYING);
 	if (retval == GST_STATE_CHANGE_FAILURE) {
 		g_printerr("Fail to change state\n");
