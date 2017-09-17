@@ -1,12 +1,51 @@
 #include <gtk/gtk.h>
 #include <gst/gst.h>
 #include <string.h>
+//#include <gst/video/videooverlay.h>
+
+#include <gdk/gdk.h>
+#if defined (GDK_WINDOWING_X11)
+#include <gdk/gdkx.h>
+#elif defined (GDK_WINDOWING_WIN32)
+#include <gdk/gdkwin32.h>
+#elif defined (GDK_WINDOWING_QUARTZ)
+#include <gdk/gdkquartz.h>
+#endif
+
+#include <gst/video/video.h>
 
 typedef struct {
 	GstElement *playbin;
-	GstState state;
+	GtkWidget *slider;              /* Slider widget to keep track of current position */
+	GtkWidget *streams_list;        /* Text widget to display info about the streams */
+	gulong slider_update_signal_id; /* Signal ID for the slider update signal */
+
+	GstState state;                 /* Current state of the pipeline */
 	gint64 duration;
 } graph_t;
+
+/* This function is called when the GUI toolkit creates the physical window that will hold the video.
+ * At this point we can retrieve its handler (which has a different meaning depending on the windowing system)
+ * and pass it to GStreamer through the VideoOverlay interface. */
+//static 
+void realize_cb (GtkWidget *widget, graph_t *graph) {
+	GdkWindow *window = gtk_widget_get_window (widget);
+	guintptr window_handle;
+
+	if (!gdk_window_ensure_native (window))
+		g_error ("Couldn't create native window needed for GstVideoOverlay!");
+
+	/* Retrieve window handler from GDK */
+#if defined (GDK_WINDOWING_WIN32)
+	window_handle = (guintptr)GDK_WINDOW_HWND (window);
+#elif defined (GDK_WINDOWING_QUARTZ)
+	window_handle = gdk_quartz_window_get_nsview (window);
+#elif defined (GDK_WINDOWING_X11)
+	window_handle = GDK_WINDOW_XID (window);
+#endif
+	/* Pass it to playbin, which implements VideoOverlay and will forward it to the video sink */
+	gst_video_overlay_set_window_handle (GST_VIDEO_OVERLAY (graph->playbin), window_handle);
+}
 
 /* metadata found in the stream */
 static void tags_changed(GstElement *playbin, gint stream, graph_t *graph)
@@ -16,64 +55,141 @@ static void tags_changed(GstElement *playbin, gint stream, graph_t *graph)
 							     gst_structure_new_empty("tags-changed")));
 }
 
-static void destroy_event(GtkWidget *widget, 
-			  GdkEvent *event,
-			  graph_t *graph)
+//static 
+void destroy_event(GtkWidget *widget, 
+		GdkEvent *event,
+		graph_t *graph)
 {
 	gst_element_set_state(graph->playbin, GST_STATE_READY);
 	gtk_main_quit();
 }
 
+/* This function is called when the PLAY button is clicked */
+//static 
+void play_cb (GtkButton *button, graph_t *graph) 
+{
+	gst_element_set_state (graph->playbin, GST_STATE_PLAYING);
+}
+
+/* This function is called when the PAUSE button is clicked */
+//static 
+void pause_cb (GtkButton *button, graph_t *graph) 
+{
+	gst_element_set_state (graph->playbin, GST_STATE_PAUSED);
+}
+
+/* This function is called when the STOP button is clicked */
+//static 
+void stop_cb (GtkButton *button, graph_t *graph) 
+{
+	gst_element_set_state (graph->playbin, GST_STATE_READY);
+}
+/* This function is called when the slider changes its position. We perform a seek to the
+ * new position here. */
+//static 
+void slider_cb (GtkRange *range, graph_t *graph) 
+{
+	gdouble value = gtk_range_get_value (GTK_RANGE (graph->slider));
+	gst_element_seek_simple (graph->playbin, GST_FORMAT_TIME, GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT,
+			(gint64)(value * GST_SECOND));
+}
+
 static gboolean refresh_ui(graph_t *graph)
 {
 	gint64 current = -1;
-
+	
+	/* We do not want to update anything unless we are in the PAUSED or PLAYING states */
 	if (graph->state < GST_STATE_PAUSED)
 		return TRUE;
-		
+	
+	/* If we didn't know it yet, query the stream duration */
+	if (!GST_CLOCK_TIME_IS_VALID(graph->duration)) {
+		if (!gst_element_query_duration (graph->playbin, GST_FORMAT_TIME, &graph->duration)) {
+			g_printerr ("Could not query current duration.\n");
+		} else {
+			/* Set the range of the slider to the clip duration, in SECONDS */
+			gtk_range_set_range(GTK_RANGE(graph->slider), 0, (gdouble)graph->duration / GST_SECOND);
+		}
+	}
+
+	if (gst_element_query_position (graph->playbin, GST_FORMAT_TIME, &current)) {
+		/* Block the "value-changed" signal, so the slider_cb function is not called
+		 * (which would trigger a seek the user has not requested) */
+		g_signal_handler_block(graph->slider, graph->slider_update_signal_id);
+		/* Set the position of the slider to the current pipeline positoin, in SECONDS */
+		gtk_range_set_value(GTK_RANGE(graph->slider), (gdouble)current / GST_SECOND);
+		/* Re-enable the signal */
+		g_signal_handler_unblock (graph->slider, graph->slider_update_signal_id);
+	}
+	
 	return TRUE;
+}
+
+/* This function is called everytime the video window needs to be redrawn (due to damage/exposure,
+ * rescaling, etc). GStreamer takes care of this in the PAUSED and PLAYING states, otherwise,
+ * we simply draw a black rectangle to avoid garbage showing up. */
+//static 
+gboolean draw_cb (GtkWidget *widget, cairo_t *cr, graph_t *graph) 
+{
+	if (graph->state < GST_STATE_PAUSED) {
+		GtkAllocation allocation;
+
+		/* Cairo is a 2D graphics library which we use here to clean the video window.
+		 * It is used by GStreamer for other reasons, so it will always be available to us. */
+		gtk_widget_get_allocation (widget, &allocation);
+		cairo_set_source_rgb (cr, 0, 0, 0);
+		cairo_rectangle (cr, 0, 0, allocation.width, allocation.height);
+		cairo_fill (cr);
+	}
+
+	return FALSE;
 }
 
 static void create_ui(graph_t *graph)
 {
-	GtkWidget *video_window,
-		  *main_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	GtkWidget *main_window;  /* The uppermost window, containing all other windows */
+	GtkWidget *video_window; /* The drawing area where the video will be shown */
+	GtkWidget *main_box;     /* VBox to hold main_hbox and the controls */
+	GtkWidget *main_hbox;    /* HBox to hold the video_window and the stream info text widget */
+	GtkWidget *controls;     /* HBox to hold the buttons and the slider */
+	GtkWidget *play_button, *pause_button, *stop_button; /* Buttons */
 
-	gtk_window_set_title(GTK_WINDOW(window), "Hello World!");
+	main_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	gtk_window_set_title(GTK_WINDOW(main_window), "Hello World!");
 
-	g_signal_connect(GTK_OBJECT(window), "destroy", //"delete-event", 
+	g_signal_connect(G_OBJECT(main_window), "destroy", //"delete-event", 
 			 G_CALLBACK(destroy_event), graph);
 
 	video_window = gtk_drawing_area_new();
 	gtk_widget_set_double_buffered(video_window, FALSE);
-	g_signal_connect (video_window, "realize", G_CALLBACK (realize_cb), data);
-	g_signal_connect (video_window, "draw", G_CALLBACK (draw_cb), data);
+	g_signal_connect (video_window, "realize", G_CALLBACK (realize_cb), graph);
+	g_signal_connect (video_window, "draw", G_CALLBACK (draw_cb), graph);
 
 	play_button = gtk_button_new_from_icon_name ("media-playback-start", GTK_ICON_SIZE_SMALL_TOOLBAR);
-	g_signal_connect (G_OBJECT (play_button), "clicked", G_CALLBACK (play_cb), data);
+	g_signal_connect (G_OBJECT (play_button), "clicked", G_CALLBACK (play_cb), graph);
 
 	pause_button = gtk_button_new_from_icon_name ("media-playback-pause", GTK_ICON_SIZE_SMALL_TOOLBAR);
-	g_signal_connect (G_OBJECT (pause_button), "clicked", G_CALLBACK (pause_cb), data);
+	g_signal_connect (G_OBJECT (pause_button), "clicked", G_CALLBACK (pause_cb), graph);
 
 	stop_button = gtk_button_new_from_icon_name ("media-playback-stop", GTK_ICON_SIZE_SMALL_TOOLBAR);
-	g_signal_connect (G_OBJECT (stop_button), "clicked", G_CALLBACK (stop_cb), data);
+	g_signal_connect (G_OBJECT (stop_button), "clicked", G_CALLBACK (stop_cb), graph);
 
-	data->slider = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL, 0, 100, 1);
-	gtk_scale_set_draw_value (GTK_SCALE (data->slider), 0);
-	data->slider_update_signal_id = g_signal_connect (G_OBJECT (data->slider), "value-changed", G_CALLBACK (slider_cb), data);
+	graph->slider = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL, 0, 100, 1);
+	gtk_scale_set_draw_value (GTK_SCALE (graph->slider), 0);
+	graph->slider_update_signal_id = g_signal_connect (G_OBJECT (graph->slider), "value-changed", G_CALLBACK (slider_cb), graph);
 
-	data->streams_list = gtk_text_view_new ();
-	gtk_text_view_set_editable (GTK_TEXT_VIEW (data->streams_list), FALSE);
+	graph->streams_list = gtk_text_view_new ();
+	gtk_text_view_set_editable (GTK_TEXT_VIEW (graph->streams_list), FALSE);
 
 	controls = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	gtk_box_pack_start (GTK_BOX (controls), play_button, FALSE, FALSE, 2);
 	gtk_box_pack_start (GTK_BOX (controls), pause_button, FALSE, FALSE, 2);
 	gtk_box_pack_start (GTK_BOX (controls), stop_button, FALSE, FALSE, 2);
-	gtk_box_pack_start (GTK_BOX (controls), data->slider, TRUE, TRUE, 2);
+	gtk_box_pack_start (GTK_BOX (controls), graph->slider, TRUE, TRUE, 2);
 
 	main_hbox = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	gtk_box_pack_start (GTK_BOX (main_hbox), video_window, TRUE, TRUE, 0);
-	gtk_box_pack_start (GTK_BOX (main_hbox), data->streams_list, FALSE, FALSE, 2);
+	gtk_box_pack_start (GTK_BOX (main_hbox), graph->streams_list, FALSE, FALSE, 2);
 
 	main_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 	gtk_box_pack_start (GTK_BOX (main_box), main_hbox, TRUE, TRUE, 0);
