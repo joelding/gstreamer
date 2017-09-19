@@ -5,12 +5,13 @@ Exercise programs on gstreamer
 	2017/09/06 init
 
 # directories
-01\_helloworld: basic tutorial 1: Hello world 2017/09/06
-02\_hw2: basic tutorial 2: GStreamer concepts 2017/09/07
-021\_hw2: basic tutorial 2: GStreamer concepts exercise 2017/09/07
-03\_dynamic\_hw: 2017/09/08
-04\_time\_management: 2017/09/10
-
+01: basic tutorial 1: Hello world 2017/09/06
+02: basic tutorial 2: GStreamer concepts 2017/09/07
+021: basic tutorial 2: GStreamer concepts exercise 2017/09/07
+03: Dynamic pipeline 2017/09/08
+04: time management 2017/09/10
+05: basic tutorial 5 gui toolkit integration 2017/09/12
+06: basic tutorial 6 media formats and pad compabilities, 2017/09/19
 
 # Install GStreamer on Ubuntu or Debian
 ```
