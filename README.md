@@ -14,6 +14,7 @@ Exercise programs on gstreamer
 06: basic tutorial 6 media formats and pad compabilities, 2017/09/19
 07: basic tutorial 7 multithreading and pad availability
 08: basic tutorial 8 short-cutting the pipeline
+09: basic tutorial 9 gather media information
 
 # Install GStreamer on Ubuntu or Debian
 ```
